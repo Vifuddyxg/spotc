@@ -1,0 +1,7 @@
+spotc
+spotc-fx
+spotc-ipv4.so
+src/*.o
+.claude-flow/
+token-helper/target/
+token-helper/.claude-flow/
