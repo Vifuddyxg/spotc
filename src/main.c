@@ -93,6 +93,35 @@ static void set_fx(App *a, float speed, float reverb) {
         set_status(a, "slow/reverb apply when playing on '%s' (d)", a->cfg.device_name);
 }
 
+static void set_retune(App *a, int preset) {
+    const RetunePreset *p = &retune_presets[preset];
+    /* retune and slow+reverb are exclusive: stacked they would drag the
+     * pitch off the advertised Hz, and the whole point is hitting it */
+    int had_fx = a->speed < 0.999f || a->reverb > 0.001f;
+    a->retune = p->ratio;
+    a->cfg.retune = a->retune;
+    if (preset != 0) {
+        a->speed = 1.0f;
+        a->reverb = p->reverb;   /* deep presets bring their own reverb */
+        a->cfg.speed = a->speed;
+        a->cfg.reverb = a->reverb;
+    }
+    player_set_fx(a);
+    config_save(&a->cfg);
+    if (!a->pipeline_up || strcmp(a->active_device, a->cfg.device_name)) {
+        set_status(a, "retune applies when playing on '%s' (d)", a->cfg.device_name);
+        return;
+    }
+    if (preset == 0)
+        set_status(a, "retune off — standard 440 Hz tuning");
+    else if (p->reverb > 0.001f)
+        set_status(a, "retune %s = %d Hz (%.3fx) + reverb %d%%",
+                   p->note, p->hz, a->retune, (int)(p->reverb * 100));
+    else
+        set_status(a, "retune %s = %d Hz (%.3fx)%s", p->note, p->hz, a->retune,
+                   had_fx ? "  ·  slow+reverb off" : "");
+}
+
 static int key_is(int ch, int configured) {
     return configured > 0 && ch == configured;
 }
@@ -103,19 +132,36 @@ static void slow_reverb(App *a, int stronger) {
     static const float reverbs[] = { 0.00f, 0.10f, 0.18f, 0.26f, 0.34f,
                                      0.42f, 0.50f, 0.58f, 0.65f };
     enum { FX_LEVELS = (int)(sizeof speeds / sizeof *speeds) - 1 };
+    /* clear retune even when toggling off: a deep preset's slowdown must not
+     * survive an "o" press that reads as "turn the effects off" */
+    int had_retune = a->retune < 0.999f || a->retune > 1.001f;
     int level = 0;
-    float nearest = 1000.0f;
-    for (int i = 0; i <= FX_LEVELS; i++) {
-        float d = (a->speed - speeds[i]) * (a->speed - speeds[i]) +
-                  (a->reverb - reverbs[i]) * (a->reverb - reverbs[i]);
-        if (d < nearest) { nearest = d; level = i; }
+    if (!had_retune) {
+        /* a deep preset's reverb is not a slow level: matching it against the
+         * ladder would make the first "p" jump straight to 0.80x */
+        float nearest = 1000.0f;
+        for (int i = 0; i <= FX_LEVELS; i++) {
+            float d = (a->speed - speeds[i]) * (a->speed - speeds[i]) +
+                      (a->reverb - reverbs[i]) * (a->reverb - reverbs[i]);
+            if (d < nearest) { nearest = d; level = i; }
+        }
     }
     if (!stronger) level = level ? 0 : 1;
     else if (level < FX_LEVELS) level++;
+    if (had_retune) {
+        a->retune = 1.0f;
+        a->cfg.retune = 1.0f;
+    }
     set_fx(a, speeds[level], reverbs[level]);
-    if (a->pipeline_up && !strcmp(a->active_device, a->cfg.device_name))
-        set_status(a, level ? "slow + reverb %d/%d  %.2fx  rev %d%%" : "slow + reverb off",
-                   level, FX_LEVELS, speeds[level], (int)(reverbs[level] * 100));
+    if (a->pipeline_up && !strcmp(a->active_device, a->cfg.device_name)) {
+        if (level)
+            set_status(a, "slow + reverb %d/%d  %.2fx  rev %d%%%s",
+                       level, FX_LEVELS, speeds[level], (int)(reverbs[level] * 100),
+                       had_retune ? "  ·  retune off" : "");
+        else
+            set_status(a, "slow + reverb off%s",
+                       had_retune ? "  ·  retune off" : "");
+    }
 }
 
 static void logout(App *a) {
@@ -170,6 +216,15 @@ static void seek_rel(App *a, int delta_ms) {
 static void handle_popup_key(App *a, int ch) {
     if (ch == 27 || key_is(ch, a->cfg.key_quit) || key_is(ch, a->cfg.key_devices) ||
         key_is(ch, a->cfg.key_help)) { a->popup = POPUP_NONE; return; }
+    if (a->popup == POPUP_RETUNE) {
+        if (ch >= '0' && ch < '0' + RETUNE_PRESETS) {
+            set_retune(a, ch - '0');
+            a->popup = POPUP_NONE;
+        } else if (key_is(ch, a->cfg.key_retune)) {
+            a->popup = POPUP_NONE;
+        }
+        return;
+    }
     if (a->popup != POPUP_DEVICES) return;
     if (key_is(ch, a->cfg.key_down) || ch == KEY_DOWN) {
         if (a->dev_sel < a->n_devices - 1) a->dev_sel++;
@@ -245,7 +300,11 @@ static void handle_key(App *a, int ch) {
     } else if (key_is(ch, a->cfg.key_more_slow_reverb)) {
         slow_reverb(a, 1);
     } else if (key_is(ch, a->cfg.key_fx_reset)) {
+        a->retune = 1.0f;
+        a->cfg.retune = 1.0f;
         set_fx(a, 1.0f, 0.0f);
+    } else if (key_is(ch, a->cfg.key_retune)) {
+        a->popup = POPUP_RETUNE;
     } else if (key_is(ch, a->cfg.key_search)) {
         do_search(a);
     } else if (key_is(ch, a->cfg.key_devices)) {
@@ -282,6 +341,7 @@ int main(void) {
     config_load(&a.cfg);
     a.speed = a.cfg.speed;
     a.reverb = a.cfg.reverb;
+    a.retune = a.cfg.retune;
     signal(SIGPIPE, SIG_IGN);
 
     /* stale tokens minted with a different client id must not short-circuit login */

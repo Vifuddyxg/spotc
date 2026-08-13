@@ -23,12 +23,13 @@ typedef struct {
     int bitrate;     /* 96 / 160 / 320 */
     float speed;     /* persisted fx defaults */
     float reverb;
+    float retune;    /* tuning ratio, 1.0 = A4 440 Hz */
 
     /* All textual controls can be changed in ~/.config/spotc/config. */
     int key_quit, key_focus, key_down, key_up, key_top, key_bottom;
     int key_play_pause, key_next, key_prev, key_seek_back, key_seek_forward;
     int key_volume_down, key_volume_up, key_shuffle, key_repeat, key_queue;
-    int key_slow_reverb, key_more_slow_reverb, key_fx_reset;
+    int key_slow_reverb, key_more_slow_reverb, key_fx_reset, key_retune;
     int key_search, key_devices, key_help, key_reload, key_logout;
     int key_client_id, key_login;
 } Config;
@@ -66,7 +67,7 @@ typedef struct {
 } Device;
 
 enum { FOCUS_SIDEBAR, FOCUS_TRACKS };
-enum { POPUP_NONE, POPUP_DEVICES, POPUP_HELP };
+enum { POPUP_NONE, POPUP_DEVICES, POPUP_HELP, POPUP_RETUNE };
 enum { SCREEN_LOGIN, SCREEN_MAIN };
 enum { TRACKS_NONE, TRACKS_PLAYLIST, TRACKS_LIKED, TRACKS_SEARCH };
 
@@ -115,9 +116,26 @@ typedef struct App {
     int pipeline_up;
     float speed;
     float reverb;
+    float retune;    /* multiplies speed in the fx chain, never shown as "slow" */
 
     char status[256];
 } App;
+
+/* "magic Hz" retune presets: the nearest equal-temperament note is tuned to
+ * hit the target, the way real solfeggio converters do — a naive A4 jump to
+ * 174/963 would mean 0.4x/2.2x playback. The "deep" presets DO drag A4 itself
+ * down, giving slowed-vibe playback, and carry their own reverb (reverb never
+ * shifts pitch, so the Hz stays exact). Index 0 = off, indexes match the
+ * digit pressed in the retune popup. */
+typedef struct {
+    int hz;
+    const char *note;
+    float ratio;
+    float reverb;
+    const char *claim;
+} RetunePreset;
+#define RETUNE_PRESETS 10
+extern const RetunePreset retune_presets[RETUNE_PRESETS];
 
 static inline int sidebar_total(const App *a) {
     return 1 + a->n_albums + a->n_playlists;

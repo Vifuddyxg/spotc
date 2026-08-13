@@ -60,7 +60,7 @@ static int start_pipeline(App *a, int oauth) {
     mkdir(lrs_cache, 0700);
     snprintf(lrs_log, sizeof lrs_log, "%s/librespot.log", cache_dir());
     snprintf(bitrate, sizeof bitrate, "%d", a->cfg.bitrate);
-    snprintf(spd, sizeof spd, "%.3f", a->speed);
+    snprintf(spd, sizeof spd, "%.3f", a->speed * a->retune);
     snprintf(rev, sizeof rev, "%.3f", a->reverb);
 
     int p1[2], p2[2];
@@ -203,7 +203,8 @@ void player_set_fx(App *a) {
     int fd = open(fifo_path, O_WRONLY | O_NONBLOCK);
     if (fd < 0) return;
     char msg[64];
-    int n = snprintf(msg, sizeof msg, "speed %.3f\nreverb %.3f\n", a->speed, a->reverb);
+    int n = snprintf(msg, sizeof msg, "speed %.3f\nreverb %.3f\n",
+                     a->speed * a->retune, a->reverb);
     ssize_t w = write(fd, msg, n);
     (void)w;
     close(fd);

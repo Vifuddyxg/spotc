@@ -174,8 +174,28 @@ static void draw_bottom(App *a) {
 
     char fx[256];
     static const char *rep_ind[] = { "", "  ⟳", "  ⟳¹" };
-    snprintf(fx, sizeof fx, " vol %d%%  ·  %.2fx%s  ·  rev %d%%%s%s%s",
-             a->volume, a->speed, a->speed < 0.999f ? " slow" : "",
+    /* retune label is the preset's nominal target; the parenthesized value is
+     * where that note actually lands once slow's own pitch drop stacks on top */
+    char tune[48] = "";
+    if (a->retune < 0.999f || a->retune > 1.001f) {
+        int lbl = 0;
+        for (int i = 1; i < RETUNE_PRESETS; i++)
+            if (a->retune > retune_presets[i].ratio - 0.0005f &&
+                a->retune < retune_presets[i].ratio + 0.0005f) {
+                lbl = retune_presets[i].hz;
+                break;
+            }
+        if (!lbl) lbl = (int)(440.0f * a->retune + 0.5f);  /* hand-edited config */
+        int real = (int)(lbl * a->speed + 0.5f);
+        if (real != lbl)
+            snprintf(tune, sizeof tune, "  ·  ret %d Hz (now≈%d)", lbl, real);
+        else
+            snprintf(tune, sizeof tune, "  ·  ret %d Hz", lbl);
+    }
+    /* the x shown is the real playback rate: slow and retune multiplied */
+    float rate = a->speed * a->retune;
+    snprintf(fx, sizeof fx, " vol %d%%  ·  %.2fx%s%s  ·  rev %d%%%s%s%s",
+             a->volume, rate, rate < 0.999f ? " slow" : "", tune,
              (int)(a->reverb * 100),
              a->shuffle ? "  ⤨" : "", rep_ind[a->repeat],
              a->pipeline_up ? "" : "  ·  fx need the spotc device");
@@ -209,7 +229,7 @@ static void draw_popup(App *a) {
     /* help reflects the actual keybinds from ~/.config/spotc/config */
     const Config *c = &a->cfg;
     char pair[8][16];
-    char help[10][96];
+    char help[11][96];
     snprintf(pair[0], sizeof pair[0], "%s/%s", kn(c->key_down), kn(c->key_up));
     snprintf(pair[1], sizeof pair[1], "%s/%s", kn(c->key_next), kn(c->key_prev));
     snprintf(pair[2], sizeof pair[2], "%s/%s", kn(c->key_seek_back), kn(c->key_seek_forward));
@@ -223,12 +243,13 @@ static void draw_popup(App *a) {
               kn(c->key_repeat), "repeat");
     help_line(help[5], sizeof help[5], kn(c->key_slow_reverb), "slow+reverb",
               kn(c->key_more_slow_reverb), "8 gradual levels");
-    help_line(help[6], sizeof help[6], kn(c->key_fx_reset), "reset fx",
-              kn(c->key_search), "search");
-    snprintf(help[7], sizeof help[7], "%s devices   %s reload   %s logout (clears credentials)",
+    help_line(help[6], sizeof help[6], kn(c->key_retune), "retune (432 Hz & co)",
+              kn(c->key_fx_reset), "reset fx");
+    help_line(help[7], sizeof help[7], kn(c->key_search), "search", "", "");
+    snprintf(help[8], sizeof help[8], "%s devices   %s reload   %s logout (clears credentials)",
              kn(c->key_devices), kn(c->key_reload), kn(c->key_logout));
-    snprintf(help[8], sizeof help[8], "change all keys: ~/.config/spotc/config");
-    help_line(help[9], sizeof help[9], kn(c->key_quit), "quit", "", "");
+    snprintf(help[9], sizeof help[9], "change all keys: ~/.config/spotc/config");
+    help_line(help[10], sizeof help[10], kn(c->key_quit), "quit", "", "");
 
     int w, h;
     const char *title;
@@ -239,6 +260,11 @@ static void draw_popup(App *a) {
         if (w > COLS - 4) w = COLS - 4;
         if (w < 20) w = 20;
         title = " keys ";
+    } else if (a->popup == POPUP_RETUNE) {
+        w = 76; h = RETUNE_PRESETS + 7;
+        if (w > COLS - 4) w = COLS - 4;
+        if (w < 20) w = 20;
+        title = " retune ";
     } else {
         w = 44; h = a->n_devices + 4;
         title = " devices ";
@@ -268,6 +294,28 @@ static void draw_popup(App *a) {
     if (a->popup == POPUP_HELP) {
         for (size_t i = 0; i < sizeof help / sizeof *help && (int)i < h - 3; i++)
             putline(y0 + 2 + i, x0 + 3, w - 6, help[i], CP_TEXT, 0);
+    } else if (a->popup == POPUP_RETUNE) {
+        /* list off-preset last so the popup reads 1..6 then 0 */
+        for (int r = 0; r < RETUNE_PRESETS && r < h - 3; r++) {
+            int i = (r + 1) % RETUNE_PRESETS;
+            const RetunePreset *p = &retune_presets[i];
+            char line[128];
+            int active = a->retune > p->ratio - 0.0005f &&
+                         a->retune < p->ratio + 0.0005f;
+            snprintf(line, sizeof line, "%d  %3d Hz  %-3s  %.3fx%s  %s",
+                     i, p->hz, p->note, p->ratio,
+                     p->reverb > 0.001f ? "+rev" : "", p->claim);
+            putline(y0 + 2 + r, x0 + 3, w - 6, line,
+                    active ? CP_ACCENT : CP_TEXT, active ? A_BOLD : 0);
+        }
+        int fy = y0 + 2 + RETUNE_PRESETS;
+        if (fy + 3 >= y0 + h - 1) fy = y0 + h - 5;   /* clamped popup: keep footer inside */
+        putline(fy + 1, x0 + 3, w - 6,
+                "the nearest note is tuned to hit the target Hz; no claim has", CP_DIM, 0);
+        putline(fy + 2, x0 + 3, w - 6,
+                "scientific evidence. slow+reverb would drag the pitch off the", CP_DIM, 0);
+        putline(fy + 3, x0 + 3, w - 6,
+                "target, so picking one turns the other off (and vice versa).", CP_DIM, 0);
     } else {
         if (a->n_devices == 0)
             putline(y0 + 2, x0 + 3, w - 6, "no devices found", CP_DIM, 0);
